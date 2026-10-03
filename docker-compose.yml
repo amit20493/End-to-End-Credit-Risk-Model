@@ -1,0 +1,20 @@
+services:
+  credit-risk-api:
+    build: .
+    image: credit-risk-api:latest
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      API_KEY: ${API_KEY:-}
+      MODEL_PATH: /app/artifacts/model.joblib
+      DECISION_THRESHOLD: ${DECISION_THRESHOLD:-0.5}
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Notebooks / IDE
+.ipynb_checkpoints/
+.idea/
+.vscode/
+
+# Data and model artifacts (keep directory placeholders)
+data/raw/*.csv
+!data/raw/.gitkeep
+data/processed/*.csv
+!data/processed/.gitkeep
+artifacts/*.joblib
+artifacts/*.json
+!artifacts/.gitkeep
+mlruns/
+mlartifacts/
+
+# OS
+Thumbs.db
+.DS_Store

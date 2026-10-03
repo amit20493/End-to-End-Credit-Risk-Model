@@ -1,0 +1,1 @@
+from credit_risk.labeling.rfm import assign_high_risk_labels as assign_high_risk_labels

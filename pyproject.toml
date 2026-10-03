@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-risk-model"
+version = "1.0.0"
+description = "Production credit-risk scoring service for Xente-style transaction data."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Credit Risk MLOps" }]
+dependencies = [
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "joblib>=1.3.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+mlflow = ["mlflow>=2.12.0"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.27.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+credit-risk-process = "credit_risk.cli:process_main"
+credit-risk-train = "credit_risk.cli:train_main"
+credit-risk-serve = "credit_risk.cli:serve_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]
+
+[tool.coverage.run]
+source = ["credit_risk"]
+branch = true
