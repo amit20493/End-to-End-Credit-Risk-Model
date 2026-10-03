@@ -1,9 +1,8 @@
-name: CD
+name: UAT
 
 on:
   push:
     branches: [main, master]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -12,9 +11,10 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
+  API_KEY: uat-ci-smoke-key
 
 jobs:
-  build-and-push:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,11 +24,60 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
-      - name: Train production artifact
+      - name: Install package
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests scripts
+
+      - name: Unit tests
+        run: pytest --cov=credit_risk --cov-report=term-missing
+
+  uat:
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Train UAT artifact
         run: |
           pip install -e ".[dev]"
           python -m credit_risk.cli train --synthetic --quick
+
+      - name: Build UAT image
+        run: docker build -t credit-risk-api:uat .
+
+      - name: Start UAT container
+        run: |
+          docker run -d --name credit-risk-uat -p 8000:8000 \
+            -e APP_ENV=uat \
+            -e API_KEY="$API_KEY" \
+            -e MODEL_PATH=/app/artifacts/model.joblib \
+            credit-risk-api:uat
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/ready; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs credit-risk-uat
+          exit 1
+
+      - name: UAT HTTP smoke tests
+        run: |
+          python scripts/uat_smoke.py
+        env:
+          UAT_BASE_URL: http://127.0.0.1:8000
+          API_KEY: ${{ env.API_KEY }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -37,43 +86,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  deploy:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Deploy via SSH
-        if: ${{ vars.DEPLOY_HOST != '' }}
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ vars.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            docker tag ghcr.io/${{ github.repository }}:${{ github.ref_name }} credit-risk-api:latest
-            cd ${{ vars.DEPLOY_PATH || '/opt/credit-risk' }}
-            docker compose up -d --no-build credit-risk-api
+      - name: Push UAT image
+        run: |
+          IMAGE=$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          SHA_TAG="uat-${GITHUB_SHA::7}"
+          docker tag credit-risk-api:uat "${IMAGE}:uat"
+          docker tag credit-risk-api:uat "${IMAGE}:${SHA_TAG}"
+          docker push "${IMAGE}:uat"
+          docker push "${IMAGE}:${SHA_TAG}"
+          echo "Pushed ${IMAGE}:uat and ${IMAGE}:${SHA_TAG}"

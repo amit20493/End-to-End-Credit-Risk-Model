@@ -22,3 +22,21 @@ def test_health_and_predict(tmp_path, monkeypatch, sample_payload):
         assert "credit_score" in body
         assert "probability_of_default" in body
         assert body["risk_band"] in {"A", "B", "C", "D", "E"}
+
+
+def test_predict_requires_api_key(tmp_path, monkeypatch, sample_payload):
+    dest = tmp_path / "model.joblib"
+    train(use_synthetic=True, quick=True, output_path=dest)
+    monkeypatch.setattr(settings, "model_path", dest)
+    monkeypatch.setattr(settings, "api_key", "uat-test-key")
+
+    with TestClient(app) as client:
+        denied = client.post("/v1/predict", json=sample_payload)
+        assert denied.status_code == 401
+
+        allowed = client.post(
+            "/v1/predict",
+            json=sample_payload,
+            headers={"X-API-Key": "uat-test-key"},
+        )
+        assert allowed.status_code == 200

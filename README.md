@@ -9,7 +9,7 @@ Production credit-risk scoring service for Xente-style mobile-money transactions
 3. **Models** — logistic regression and random forest with stratified CV; the champion (best CV F1) is serialized with the full preprocess pipeline.
 4. **Scoring** — PD → scorecard (`PDO` / base odds) → bands A–E.
 5. **Serving** — FastAPI `/v1/predict` and `/v1/predict/batch`.
-6. **CI/CD** — GitHub Actions lint/test on PRs; train + Docker image push to GHCR on `main`; optional SSH deploy on version tags.
+6. **CI/CD** — GitHub Actions unit tests on PRs; UAT pipeline on `main` (train, container smoke tests, push `uat` image to GHCR). No production deploy.
 
 ## Project layout
 
@@ -105,30 +105,95 @@ docker build -t credit-risk-api:latest .
 docker run --rm -p 8000:8000 -e MODEL_PATH=/app/artifacts/model.joblib credit-risk-api:latest
 ```
 
-## GitHub CI/CD
+## GitHub CI/CD (stops at UAT)
+
+Pipeline: **PR quality → merge to `main` → UAT image + smoke tests → GHCR `uat` tag**. There is no production SSH deploy and no `DEPLOY_*` secrets.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | PRs and pushes to `main` | Install, Ruff, pytest + coverage |
-| `.github/workflows/cd.yml` | Push to `main` and tags `v*` | Train artifact, build image, push to `ghcr.io/<owner>/<repo>` |
-| CD `deploy` job | Tags `v*` only | SSH pull + `docker compose up` when `DEPLOY_HOST` is set |
+| `.github/workflows/ci.yml` | PRs and pushes to `main` | Ruff + pytest + coverage |
+| `.github/workflows/cd.yml` (`UAT`) | Push to `main` or **Run workflow** | Re-run tests, train UAT model, Docker smoke (`/health`, `/ready`, `/v1/predict`), push `ghcr.io/<owner>/<repo>:uat` |
 
 Enable GitHub Container Registry: repo **Settings → Actions → General → Workflow permissions → Read and write**.
 
-Packages are private by default. On the server: `echo $CR_PAT | docker login ghcr.io -u USERNAME --password-stdin`.
+Create GitHub environment **uat**: **Settings → Environments → New environment** → name `uat`.
 
-### Optional production SSH deploy
+UAT image (this repo): `ghcr.io/amit20493/end-to-end-credit-risk-model:uat`
 
-Repository **Settings → Secrets and variables**:
+Packages are private by default. To pull locally: `echo $CR_PAT | docker login ghcr.io -u USERNAME --password-stdin` (`read:packages` token).
 
-- Secret `DEPLOY_USER`
-- Secret `DEPLOY_SSH_KEY` (private key)
-- Variable `DEPLOY_HOST` (server IP or DNS)
-- Variable `DEPLOY_PATH` (directory with `docker-compose.yml`, default `/opt/credit-risk`)
+## How to test (local + UAT)
 
-Create a GitHub release tag (`v1.0.0`) to ship.
+### 1. Unit / API tests (same as CI)
 
-## Steps to deploy the model
+```bash
+pip install -e ".[dev]"
+ruff check src tests scripts
+pytest
+```
+
+### 2. Train then serve locally
+
+```bash
+python -m credit_risk.cli train --synthetic --quick
+python -m credit_risk.cli serve
+```
+
+In a second terminal:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/ready
+python scripts/uat_smoke.py
+```
+
+If `.env` has `API_KEY` set, smoke uses it automatically. Override:
+
+```bash
+# PowerShell
+$env:API_KEY="uat-local-key"
+python scripts/uat_smoke.py
+```
+
+Browser: http://127.0.0.1:8000/docs
+
+### 3. UAT Docker (no VM)
+
+Train first so `artifacts/model.joblib` exists, then:
+
+```bash
+docker compose -f docker-compose.uat.yml up --build
+```
+
+Second terminal:
+
+```bash
+$env:API_KEY="uat-local-key"
+python scripts/uat_smoke.py
+```
+
+### 4. After GitHub UAT workflow is green
+
+1. Open **Actions → UAT** and confirm the `uat` job passed.
+2. Open **Packages** and confirm tag `uat`.
+3. Pull and smoke locally:
+
+```bash
+docker login ghcr.io
+docker pull ghcr.io/amit20493/end-to-end-credit-risk-model:uat
+docker run --rm -p 8000:8000 -e APP_ENV=uat -e API_KEY=uat-local-key ghcr.io/amit20493/end-to-end-credit-risk-model:uat
+```
+
+Then run `python scripts/uat_smoke.py` with the same `API_KEY`.
+
+UAT smoke checks:
+
+- `GET /health` → `model_loaded: true`
+- `GET /ready` → 200
+- `POST /v1/predict` without key → 401 when `API_KEY` is set
+- `POST /v1/predict` with `X-API-Key` → PD, credit score, band A–E
+
+## Steps to promote a model into UAT
 
 ### 1. Prepare data and train
 
@@ -152,48 +217,15 @@ Check `artifacts/model.json` before promotion:
 
 Treat RFM labels as a **proxy**, not observed default. Recalibrate PD and the decision threshold when you have real default outcomes.
 
-### 3. Ship the API image
+### 3. Push to `main` for UAT
 
-**A. Local / VM**
+CI + UAT workflows run automatically. Accept the build only if Actions **UAT** is green and Packages shows `:uat`.
 
-```bash
-docker compose up -d --build
-curl http://127.0.0.1:8000/ready
-```
+GitHub UAT currently trains with `--synthetic --quick` so the automated image is for pipeline acceptance, not a live credit book. For a realistic UAT model, train locally on `data/raw/data.csv` and run `docker compose -f docker-compose.uat.yml up --build`.
 
-Point a reverse proxy (Nginx / Caddy) at port 8000 with TLS.
+### 4. Model updates in UAT
 
-**B. GitHub Container Registry**
-
-1. Push `main` (CD builds and pushes the image).
-2. On the host:
-
-```bash
-docker login ghcr.io
-docker pull ghcr.io/<owner>/End-to-End-Credit-Risk-Model:latest
-docker tag ghcr.io/<owner>/End-to-End-Credit-Risk-Model:latest credit-risk-api:latest
-docker compose up -d --no-build
-```
-
-**C. Cloud container services** (same image)
-
-- **AWS**: push to ECR or pull GHCR; run on ECS Fargate / App Runner; attach an ALB; store `model.joblib` in S3 or bake it into the image.
-- **Azure**: Azure Container Apps or App Service (container); set `MODEL_PATH` and `API_KEY`.
-- **GCP**: Cloud Run; memory ≥ 1Gi; set concurrency and min instances for latency.
-- **Render / Railway / Fly.io**: deploy from the Dockerfile; add disk or bake the artifact.
-
-Set environment variables: `APP_ENV=production`, `MODEL_PATH`, `API_KEY`, `DECISION_THRESHOLD`.
-
-### 4. Runtime checks
-
-- `GET /health` — process up; `model_loaded` must be true
-- `GET /ready` — 200 before attaching load balancer
-- Score a known fixture transaction and compare PD / score to the training notebook
-- Enforce `API_KEY` on public endpoints
-
-### 5. Model updates
-
-Retrain → bump image tag (`v1.1.0`) → deploy with rolling restart → keep the previous image for rollback. Do not hot-swap `model.joblib` without restarting workers; they load the artifact at process start.
+Retrain → merge to `main` → wait for the `uat` tag → pull that image and re-run `scripts/uat_smoke.py`. Workers load the artifact at process start; restart the container after a new model.
 
 ## Risk bands
 

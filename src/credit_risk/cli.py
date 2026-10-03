@@ -32,7 +32,7 @@ def serve_main() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Credit-risk production CLI")
+    parser = argparse.ArgumentParser(description="Credit-risk CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     process_parser = sub.add_parser("process", help="Build labeled dataset")

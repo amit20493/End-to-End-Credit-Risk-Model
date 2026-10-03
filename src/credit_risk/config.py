@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "credit-risk-api"
-    app_env: str = "local"
+    app_env: str = "uat"
     log_level: str = "INFO"
     api_key: str = ""
 

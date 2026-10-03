@@ -2,7 +2,7 @@ FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    APP_ENV=production \
+    APP_ENV=uat \
     LOG_LEVEL=INFO \
     MODEL_PATH=/app/artifacts/model.joblib
 
